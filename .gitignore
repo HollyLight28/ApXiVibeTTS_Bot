@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Env & secrets
+.env
+
+# Audio temps
+temp_audio/
+
+# IDE/OS
+.DS_Store
+Thumbs.db
+
