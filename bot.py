@@ -5,7 +5,10 @@ import logging
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
 from pydub import AudioSegment
 from telegram import (
     BotCommand,
@@ -49,8 +52,9 @@ MAX_LEN = 50_000
 
 
 def get_env_token() -> str:
-    # Завантажуємо змінні середовища із .env
-    load_dotenv()
+    # Завантажуємо змінні середовища із .env, якщо доступно
+    if load_dotenv:
+        load_dotenv()
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("Не знайдено TELEGRAM_BOT_TOKEN у .env або змінних середовища")
