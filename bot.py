@@ -9,7 +9,6 @@ try:
     from dotenv import load_dotenv
 except ImportError:
     load_dotenv = None
-from pydub import AudioSegment
 from telegram import (
     BotCommand,
     InlineKeyboardButton,
@@ -28,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-from app.audio_utils import write_wave_from_pcm
+from app.audio_utils import merge_wavs_to_mp3_ffmpeg, write_wave_from_pcm
 from app.chunking import split_text_into_chunks
 from app.style import build_style_instruction
 from app.title import infer_title
@@ -204,20 +203,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await asyncio.to_thread(write_wave_from_pcm, wav_path, pcm_bytes)
             wav_paths.append(wav_path)
 
-        # Склейка WAV у один MP3 через pydub
+        # Склейка WAV у один MP3 через ffmpeg (без pydub, сумісно з Python 3.13)
         await progress_msg.edit_text("🧩 Склеюю аудіо…")
-        combined = AudioSegment.silent(duration=0)
-        for wav in wav_paths:
-            seg = AudioSegment.from_wav(wav)
-            combined += seg
-
         out_mp3 = TEMP_DIR / f"tts_{update.message.message_id}.mp3"
         audio_title = infer_title(text)
         await asyncio.to_thread(
-            combined.export,
+            merge_wavs_to_mp3_ffmpeg,
+            wav_paths,
             out_mp3,
-            format="mp3",
-            tags={"title": audio_title, "artist": "ApXiVibeTTS"},
+            audio_title,
+            "ApXiVibeTTS",
         )
 
         await progress_msg.edit_text("✅ Готово! Відправляю MP3…")
