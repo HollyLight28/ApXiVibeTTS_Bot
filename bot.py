@@ -283,11 +283,29 @@ def build_app() -> Application:
     return app
 
 
+def get_webhook_config() -> tuple[str, int] | None:
+    url = os.environ.get("WEBHOOK_URL")
+    if not url:
+        return None
+    port_str = os.environ.get("PORT") or os.environ.get("WEBHOOK_PORT") or "8080"
+    try:
+        port = int(port_str)
+    except Exception:
+        port = 8080
+    return (url, port)
+
+
 def main() -> None:
-    # Точка входу: запуск бота
     app = build_app()
-    log.info("Запускаю бота…")
-    app.run_polling(close_loop=False)
+    cfg = get_webhook_config()
+    if cfg is not None:
+        url, port = cfg
+        log.info("Запускаю вебхук…")
+        app.run_webhook(port=port, webhook_url=url, drop_pending_updates=True)
+    else:
+        log.info("Запускаю поллінг…")
+        app.bot.delete_webhook(drop_pending_updates=True)
+        app.run_polling(close_loop=False, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
