@@ -37,6 +37,29 @@ def test_tts_generate_uses_audio_wav_and_content(monkeypatch: pytest.MonkeyPatch
     data = c.generate_pcm("Hello", "Kore")
     assert isinstance(data, (bytes, bytearray))
     cfg = calls.get("config")
-    assert getattr(cfg, "response_mime_type", None) == "audio/wav"
+    rms = getattr(cfg, "response_modalities", None)
+    assert isinstance(rms, list) and "AUDIO" in rms
     cont = calls.get("contents")
     assert isinstance(cont, str) and cont == "Hello"
+
+
+def test_tts_generate_retries_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy-key")
+    c = GeminiTTSClient(model="gemini-2.5-flash-preview-tts")
+
+    calls = {"count": 0}
+
+    class FakeResp:
+        candidates = [type("C", (), {"content": type("CT", (), {"parts": [type("P", (), {"inline_data": type("ID", (), {"data": b"\x00\x00"})()})()]})()})()]
+
+    def fake_generate_content(*args, **kwargs):  # noqa: ANN001
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise Exception("transient")
+        return FakeResp()
+
+    monkeypatch.setattr(c.client.models, "generate_content", fake_generate_content)
+
+    data = c.generate_pcm("Hello", "Kore")
+    assert isinstance(data, (bytes, bytearray))
+    assert calls["count"] == 2

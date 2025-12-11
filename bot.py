@@ -29,7 +29,6 @@ from telegram.ext import (
 
 from app.audio_utils import merge_wavs_to_mp3_ffmpeg, write_wave_from_pcm
 from app.chunking import split_text_into_chunks
-from app.style import build_style_instruction
 from app.title import infer_title
 from app.tts_client import GeminiTTSClient
 from app.ui import get_main_keyboard_labels
@@ -195,7 +194,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await progress_msg.edit_text(f"🔊 Генерую чанк {idx}/{total}…")
 
             # Синхронний виклик у фоні, щоб не блокувати event loop
-            style_instr = build_style_instruction(context.user_data.get("style"))
             final_text = chunk
             pcm_bytes = await asyncio.to_thread(tts.generate_pcm, final_text, voice_name)
 

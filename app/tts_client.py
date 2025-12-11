@@ -18,19 +18,29 @@ class GeminiTTSClient:
 
     def generate_pcm(self, text: str, voice_name: str = "Kore") -> bytes:
         # Викликаємо TTS з відповідною конфігурацією голосу
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=text,
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                response_mime_type="audio/wav",
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
-                    )
-                ),
-            ),
-        )
+        response = None
+        last_exc: Exception | None = None
+        for _ in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=text,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+                            )
+                        ),
+                    ),
+                )
+                break
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+        if response is None:
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("Помилка генерації аудіо")
         candidates = getattr(response, "candidates", [])
         if not candidates:
             raise RuntimeError("Порожня відповідь від Gemini TTS")
