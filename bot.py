@@ -52,6 +52,7 @@ MIN_LEN = 10
 MAX_LEN = 50_000
 CHAT_LIMITER = RateLimiter(env_int("CHAT_RPM", 15))
 TTS_LIMITER = RateLimiter(env_int("TTS_RPM", 5))
+TELEGRAM_MSG_LIMIT = 3800
 
 
 def get_env_token() -> str:
@@ -178,16 +179,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     mode = str(context.user_data.get("mode", "tts"))
     if mode == "chat":
-        await CHAT_LIMITER.acquire()
-        tc = GeminiTextClient(model="gemini-2.5-flash")
-        add_user(context.user_data, text)
-        history = get_history_lines(context.user_data)
-        reply = await asyncio.to_thread(tc.generate_text, text, history)
-        add_assistant(context.user_data, reply)
-        sent = await update.message.reply_text(reply)
-        context.user_data["last_bot_reply"] = reply
-        speak_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🗣️ Озвучити відповідь", callback_data="SPEAK")]])
-        await sent.edit_reply_markup(speak_btn)
+        try:
+            await CHAT_LIMITER.acquire()
+            tc = GeminiTextClient(model="gemini-2.5-flash")
+            add_user(context.user_data, text)
+            history = get_history_lines(context.user_data)
+            reply = await asyncio.to_thread(tc.generate_text, text, history)
+            add_assistant(context.user_data, reply)
+            if len(reply) <= TELEGRAM_MSG_LIMIT:
+                sent = await update.message.reply_text(reply)
+            else:
+                parts = split_text_into_chunks(reply, max_chars=TELEGRAM_MSG_LIMIT)
+                last_sent = None
+                for part in parts:
+                    last_sent = await update.message.reply_text(part)
+                sent = last_sent if last_sent is not None else await update.message.reply_text(reply[:TELEGRAM_MSG_LIMIT])
+            context.user_data["last_bot_reply"] = reply
+            speak_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🗣️ Озвучити відповідь", callback_data="SPEAK")]])
+            await sent.edit_reply_markup(speak_btn)
+        except Exception as e:
+            log.exception("Помилка чату: %s", e)
+            await update.message.reply_text("⚠️ Чат тимчасово недоступний, спробуй пізніше")
         return
 
     progress_msg = await update.message.reply_text("⏳ Генерую аудіо...")
