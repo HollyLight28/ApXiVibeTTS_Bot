@@ -29,7 +29,7 @@ def merge_wavs_to_mp3_ffmpeg(wavs: list[Path], out_mp3: Path, title: str | None 
     list_file = out_mp3.parent / "concat_list.txt"
     with list_file.open("w", encoding="utf-8") as f:
         for p in wavs:
-            f.write(f"file '{p.as_posix()}'\n")
+            f.write(f"file '{p.resolve().as_posix()}'\n")
     cmd = [
         "ffmpeg",
         "-y",
@@ -38,12 +38,12 @@ def merge_wavs_to_mp3_ffmpeg(wavs: list[Path], out_mp3: Path, title: str | None 
         "-safe",
         "0",
         "-i",
-        str(list_file),
+        str(list_file.resolve()),
     ]
     if title:
         cmd += ["-metadata", f"title={title}"]
     if artist:
         cmd += ["-metadata", f"artist={artist}"]
-    cmd += ["-c:a", "libmp3lame", str(out_mp3)]
+    cmd += ["-c:a", "libmp3lame", str(out_mp3.resolve())]
     subprocess.run(cmd, check=True)
 
