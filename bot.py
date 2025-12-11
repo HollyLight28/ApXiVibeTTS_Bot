@@ -29,6 +29,7 @@ from telegram.ext import (
 
 from app.audio_utils import merge_wavs_to_mp3_ffmpeg, write_wave_from_pcm
 from app.chunking import split_text_into_chunks
+from app.history import add_assistant, add_user, get_history_lines
 from app.rate_limiter import RateLimiter, env_int
 from app.text_client import GeminiTextClient
 from app.title import infer_title
@@ -179,7 +180,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if mode == "chat":
         await CHAT_LIMITER.acquire()
         tc = GeminiTextClient(model="gemini-2.5-flash")
-        reply = await asyncio.to_thread(tc.generate_text, text)
+        add_user(context.user_data, text)
+        history = get_history_lines(context.user_data)
+        reply = await asyncio.to_thread(tc.generate_text, text, history)
+        add_assistant(context.user_data, reply)
         sent = await update.message.reply_text(reply)
         context.user_data["last_bot_reply"] = reply
         speak_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🗣️ Озвучити відповідь", callback_data="SPEAK")]])

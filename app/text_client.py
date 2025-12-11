@@ -16,7 +16,7 @@ class GeminiTextClient:
         self.model = model
 
     def generate_text(self, prompt: str, history: Sequence[str] | None = None) -> str:
-        contents = prompt
+        contents = ("\n".join(history) + "\n" + prompt) if history else prompt
         response = None
         last_exc: Exception | None = None
         for _ in range(3):
