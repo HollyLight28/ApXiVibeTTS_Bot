@@ -304,7 +304,7 @@ async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await q.answer()
     last = str(context.user_data.get("last_bot_reply", "")).strip()
     if not last:
-        await q.edit_message_text("❌ Немає відповіді для озвучення")
+        await q.message.reply_text("❌ Немає відповіді для озвучення")
         return
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     tts = GeminiTTSClient(model=MODEL_ID)
@@ -312,6 +312,7 @@ async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     wav_paths: list[Path] = []
     try:
         for idx, chunk in enumerate(chunks, start=1):
+            await TTS_LIMITER.acquire()
             pcm = await asyncio.to_thread(tts.generate_pcm, chunk, "Kore")
             p = TEMP_DIR / f"chunk_{idx}.wav"
             await asyncio.to_thread(write_wave_from_pcm, p, pcm)
@@ -323,9 +324,9 @@ async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         log.exception("Помилка озвучення: %s", e)
         try:
-            await q.edit_message_text("⚠️ Помилка під час озвучення")
+            await q.message.reply_text("⚠️ Помилка під час озвучення")
         except Exception as cleanup_err:
-            log.debug("Не вдалось оновити повідомлення про помилку: %s", cleanup_err)
+            log.debug("Не вдалось надіслати повідомлення про помилку: %s", cleanup_err)
     finally:
         for p in wav_paths:
             try:
@@ -372,6 +373,9 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(mode_selected, pattern=r"^MODE:"))
     app.add_handler(CallbackQueryHandler(speak_selected, pattern=r"^SPEAK$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        log.exception("Bot error: %s", getattr(context, "error", None))
+    app.add_error_handler(error_handler)
 
     return app
 
