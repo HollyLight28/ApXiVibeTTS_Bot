@@ -23,6 +23,7 @@ class GeminiTTSClient:
             contents=text,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
+                response_mime_type="audio/wav",
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)

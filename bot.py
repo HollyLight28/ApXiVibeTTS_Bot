@@ -196,7 +196,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             # Синхронний виклик у фоні, щоб не блокувати event loop
             style_instr = build_style_instruction(context.user_data.get("style"))
-            final_text = f"{style_instr} {chunk}" if style_instr else chunk
+            final_text = chunk
             pcm_bytes = await asyncio.to_thread(tts.generate_pcm, final_text, voice_name)
 
             wav_path = TEMP_DIR / f"chunk_{idx}.wav"
