@@ -11,10 +11,9 @@ class GeminiTTSClient:
     # Клієнт для генерації PCM аудіо з тексту через Gemini TTS
     def __init__(self, api_key: str | None = None, model: str = "gemini-2.5-flash-preview-tts"):
         key = api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        if key:
-            self.client = genai.Client(api_key=key)
-        else:
-            self.client = genai.Client()
+        if not key:
+            raise RuntimeError("Відсутній GEMINI_API_KEY/GOOGLE_API_KEY. Додай ключ у змінні середовища.")
+        self.client = genai.Client(api_key=key)
         self.model = model
 
     def generate_pcm(self, text: str, voice_name: str = "Kore") -> bytes:
