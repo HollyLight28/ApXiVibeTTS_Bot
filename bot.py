@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 
 try:
@@ -46,7 +47,9 @@ log = logging.getLogger("ApXiVibeTTS")
 
 # Константи
 ALLOWED_VOICES = ("Kore", "Aoede", "Puck", "Charon")
-MODEL_ID = "gemini-2.5-flash-preview-tts"
+TEXT_MODEL_ID = os.environ.get("TEXT_MODEL_ID") or "gemini-2.5-flash"
+TTS_MODEL_ID = os.environ.get("TTS_MODEL_ID") or "gemini-2.5-flash-preview-tts"
+MODEL_ID = TTS_MODEL_ID
 TEMP_DIR = Path("temp_audio")
 MIN_LEN = 10
 MAX_LEN = 50_000
@@ -181,7 +184,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if mode == "chat":
         try:
             await CHAT_LIMITER.acquire()
-            tc = GeminiTextClient(model="gemini-2.5-flash")
+            tc = GeminiTextClient(model=TEXT_MODEL_ID)
             add_user(context.user_data, text)
             history = get_history_lines(context.user_data)
             reply = await asyncio.to_thread(tc.generate_text, text, history)
@@ -256,8 +259,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     except Exception as e:
         log.exception("Помилка генерації аудіо: %s", e)
+        msg = str(e)
         try:
-            await progress_msg.edit_text("⚠️ Помилка, спробуй пізніше")
+            if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+                m = re.search(r"retryDelay.*?(\d+)s", msg)
+                sec = int(m.group(1)) if m else 30
+                await progress_msg.edit_text(f"🚫 Квоту вичерпано. Спробуй через {sec} сек")
+            else:
+                await progress_msg.edit_text("⚠️ Помилка, спробуй пізніше")
         except Exception as cleanup_err:
             log.debug("Не вдалось оновити повідомлення про помилку: %s", cleanup_err)
     finally:
@@ -401,7 +410,6 @@ def main() -> None:
         app.run_webhook(port=port, webhook_url=url, drop_pending_updates=True)
     else:
         log.info("Запускаю поллінг…")
-        app.bot.delete_webhook(drop_pending_updates=True)
         app.run_polling(close_loop=False, drop_pending_updates=True)
 
 
