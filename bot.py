@@ -29,6 +29,8 @@ from telegram.ext import (
 
 from app.audio_utils import merge_wavs_to_mp3_ffmpeg, write_wave_from_pcm
 from app.chunking import split_text_into_chunks
+from app.rate_limiter import RateLimiter, env_int
+from app.text_client import GeminiTextClient
 from app.title import infer_title
 from app.tts_client import GeminiTTSClient
 from app.ui import get_main_keyboard_labels
@@ -47,6 +49,8 @@ MODEL_ID = "gemini-2.5-flash-preview-tts"
 TEMP_DIR = Path("temp_audio")
 MIN_LEN = 10
 MAX_LEN = 50_000
+CHAT_LIMITER = RateLimiter(env_int("CHAT_RPM", 15))
+TTS_LIMITER = RateLimiter(env_int("TTS_RPM", 5))
 
 
 def get_env_token() -> str:
@@ -78,7 +82,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "ℹ️ Як користуватись:\n"
         "1) Надішли текст повідомлення (10–50 000 символів).\n"
         "2) Я розіб'ю його на чанки по реченнях (якщо > 7000).\n"
-        "3) Згенерую аудіо через Gemini TTS і склею в MP3.\n"
+        "3) Можу спілкуватись як чат з AI (🤖).\n"
+        "4) Згенерую аудіо через Gemini TTS і склею в MP3.\n"
         "4) Відправлю тобі MP3 і видалю тимчасові файли.\n\n"
         "⚙️ Поради:\n"
         "• Обери голос у /voice. За замовчуванням — Kore.\n"
@@ -170,7 +175,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("❌ Занадто довгий текст")
         return
 
-    # Прогрес-повідомлення
+    mode = str(context.user_data.get("mode", "tts"))
+    if mode == "chat":
+        await CHAT_LIMITER.acquire()
+        tc = GeminiTextClient(model="gemini-2.5-flash")
+        reply = await asyncio.to_thread(tc.generate_text, text)
+        sent = await update.message.reply_text(reply)
+        context.user_data["last_bot_reply"] = reply
+        speak_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🗣️ Озвучити відповідь", callback_data="SPEAK")]])
+        await sent.edit_reply_markup(speak_btn)
+        return
+
     progress_msg = await update.message.reply_text("⏳ Генерую аудіо...")
 
     # Обраний голос
@@ -195,6 +210,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             # Синхронний виклик у фоні, щоб не блокувати event loop
             final_text = chunk
+            await TTS_LIMITER.acquire()
             pcm_bytes = await asyncio.to_thread(tts.generate_pcm, final_text, voice_name)
 
             wav_path = TEMP_DIR / f"chunk_{idx}.wav"
@@ -249,6 +265,64 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("♻️ Скинуто налаштування", reply_markup=ReplyKeyboardRemove())
 
 
+async def mode_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🤖 Чат", callback_data="MODE:chat"), InlineKeyboardButton("🎧 Озвучення", callback_data="MODE:tts")]]
+    )
+    await update.message.reply_text("🧭 Режим:", reply_markup=kb)
+
+
+async def mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    if data.startswith("MODE:"):
+        m = data.split(":", 1)[1]
+        if m in {"chat", "tts"}:
+            context.user_data["mode"] = m
+            await q.edit_message_text(f"✅ Режим: {m}")
+
+
+async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    last = str(context.user_data.get("last_bot_reply", "")).strip()
+    if not last:
+        await q.edit_message_text("❌ Немає відповіді для озвучення")
+        return
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    tts = GeminiTTSClient(model=MODEL_ID)
+    chunks = split_text_into_chunks(last, max_chars=7000)
+    wav_paths: list[Path] = []
+    try:
+        for idx, chunk in enumerate(chunks, start=1):
+            pcm = await asyncio.to_thread(tts.generate_pcm, chunk, "Kore")
+            p = TEMP_DIR / f"chunk_{idx}.wav"
+            await asyncio.to_thread(write_wave_from_pcm, p, pcm)
+            wav_paths.append(p)
+        out_mp3 = TEMP_DIR / f"tts_cb_{q.id}.mp3"
+        await asyncio.to_thread(merge_wavs_to_mp3_ffmpeg, wav_paths, out_mp3, infer_title(last), "ApXiVibeTTS")
+        with out_mp3.open("rb") as f:
+            await q.message.reply_audio(audio=f, caption="🎧 Озвучення відповіді")
+    except Exception as e:
+        log.exception("Помилка озвучення: %s", e)
+        try:
+            await q.edit_message_text("⚠️ Помилка під час озвучення")
+        except Exception as cleanup_err:
+            log.debug("Не вдалось оновити повідомлення про помилку: %s", cleanup_err)
+    finally:
+        for p in wav_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception as rm_err:
+                log.debug("Не вдалось видалити тимчасовий WAV: %s", rm_err)
+        try:
+            for mp3 in TEMP_DIR.glob("tts_cb_*.mp3"):
+                mp3.unlink(missing_ok=True)
+        except Exception as rm_err:
+            log.debug("Не вдалось видалити тимчасовий MP3: %s", rm_err)
+
+
 async def post_init(application: Application) -> None:
     # Меню команд Telegram (щоб не вводити вручну)
     await application.bot.set_my_commands(
@@ -276,8 +350,11 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^🎙️ Обрати голос$"), voice))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^ℹ️ Допомога$"), help_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^🎚️ Стиль/Темп$"), style_menu))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^🤖 Чат з AI$"), mode_menu))
     app.add_handler(CallbackQueryHandler(voice_selected, pattern=r"^VOICE:"))
     app.add_handler(CallbackQueryHandler(style_selected, pattern=r"^STYLE:"))
+    app.add_handler(CallbackQueryHandler(mode_selected, pattern=r"^MODE:"))
+    app.add_handler(CallbackQueryHandler(speak_selected, pattern=r"^SPEAK$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     return app

@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import os
+from collections.abc import Sequence
+
+from google import genai
+from google.genai import types
+
+
+class GeminiTextClient:
+    def __init__(self, api_key: str | None = None, model: str = "gemini-2.5-flash"):
+        key = api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not key:
+            raise RuntimeError("Відсутній GEMINI_API_KEY/GOOGLE_API_KEY. Додай ключ у змінні середовища.")
+        self.client = genai.Client(api_key=key)
+        self.model = model
+
+    def generate_text(self, prompt: str, history: Sequence[str] | None = None) -> str:
+        contents = prompt
+        response = None
+        last_exc: Exception | None = None
+        for _ in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["TEXT"],
+                    ),
+                )
+                break
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+        if response is None:
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("Помилка генерації тексту")
+        candidates = getattr(response, "candidates", [])
+        if not candidates:
+            raise RuntimeError("Порожня відповідь від Gemini")
+        content = getattr(candidates[0], "content", None)
+        parts = getattr(content, "parts", []) if content is not None else []
+        if not parts:
+            raise RuntimeError("Немає текстових даних у відповіді")
+        first = parts[0]
+        text = getattr(first, "text", None)
+        if not isinstance(text, str):
+            raise TypeError("Непідтримуваний тип тексту")
+        return text
