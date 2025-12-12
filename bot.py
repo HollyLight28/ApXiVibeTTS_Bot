@@ -31,6 +31,7 @@ from telegram.ext import (
 from app.audio_utils import merge_wavs_to_mp3_ffmpeg, write_wave_from_pcm
 from app.chunking import split_text_into_chunks
 from app.history import add_assistant, add_user, get_history_lines
+from app.history import clear as clear_history
 from app.rate_limiter import RateLimiter, env_int
 from app.text_client import GeminiTextClient
 from app.title import infer_title
@@ -264,7 +265,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
                 m = re.search(r"retryDelay.*?(\d+)s", msg)
                 sec = int(m.group(1)) if m else 30
-                await progress_msg.edit_text(f"🚫 Квоту вичерпано. Спробуй через {sec} сек")
+                await progress_msg.edit_text(f"🚫 Квоту вичерпано. Поставив у чергу на {sec} сек…")
+                # Фонове доопрацювання після паузи
+                async def deliver_after_delay() -> None:
+                    await asyncio.sleep(sec)
+                    try:
+                        tts2 = GeminiTTSClient(model=MODEL_ID)
+                        wavs2: list[Path] = []
+                        for idx2, chunk2 in enumerate(chunks, start=1):
+                            await TTS_LIMITER.acquire()
+                            pcm2 = await asyncio.to_thread(tts2.generate_pcm, chunk2, voice_name)
+                            p2 = TEMP_DIR / f"chunk_retry_{idx2}.wav"
+                            await asyncio.to_thread(write_wave_from_pcm, p2, pcm2)
+                            wavs2.append(p2)
+                        out2 = TEMP_DIR / f"tts_retry_{update.message.message_id}.mp3"
+                        await asyncio.to_thread(merge_wavs_to_mp3_ffmpeg, wavs2, out2, infer_title(text), "ApXiVibeTTS")
+                        with out2.open("rb") as f2:
+                            await update.message.reply_audio(audio=f2, caption=f"🎧 Голос: {voice_name}")
+                    except Exception as err2:
+                        log.exception("Помилка ретраю TTS: %s", err2)
+                        await update.message.reply_text("⚠️ Не вдалось після паузи. Спробуй пізніше")
+                    finally:
+                        try:
+                            for p2 in TEMP_DIR.glob("chunk_retry_*.wav"):
+                                p2.unlink(missing_ok=True)
+                            for p2 in TEMP_DIR.glob("tts_retry_*.mp3"):
+                                p2.unlink(missing_ok=True)
+                        except Exception as rm2:
+                            log.debug("Не вдалось очистити після ретраю: %s", rm2)
+
+                asyncio.create_task(deliver_after_delay())
             else:
                 await progress_msg.edit_text("⚠️ Помилка, спробуй пізніше")
         except Exception as cleanup_err:
@@ -290,11 +320,33 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("♻️ Скинуто налаштування", reply_markup=ReplyKeyboardRemove())
 
 
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    clear_history(context.user_data)
+    await update.message.reply_text("🧹 Історію чату очищено")
+
+
 async def mode_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     kb = InlineKeyboardMarkup(
         [[InlineKeyboardButton("🤖 Чат", callback_data="MODE:chat"), InlineKeyboardButton("🎧 Озвучення", callback_data="MODE:tts")]]
     )
     await update.message.reply_text("🧭 Режим:", reply_markup=kb)
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    mode = str(context.user_data.get("mode", "tts"))
+    voice_name = context.user_data.get("voice", "Kore")
+    hook = get_webhook_config()
+    running = "webhook" if hook is not None else "polling"
+    msg = (
+        f"🟢 {running}\n"
+        f"Режим: {mode}\n"
+        f"Голос: {voice_name}\n"
+        f"CHAT_RPM: {CHAT_LIMITER.rpm}\n"
+        f"TTS_RPM: {TTS_LIMITER.rpm}\n"
+        f"TEXT_MODEL: {TEXT_MODEL_ID}\n"
+        f"TTS_MODEL: {TTS_MODEL_ID}"
+    )
+    await update.message.reply_text(msg)
 
 
 async def mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -332,8 +384,42 @@ async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await q.message.reply_audio(audio=f, caption="🎧 Озвучення відповіді")
     except Exception as e:
         log.exception("Помилка озвучення: %s", e)
+        msg = str(e)
         try:
-            await q.message.reply_text("⚠️ Помилка під час озвучення")
+            if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+                m = re.search(r"retryDelay.*?(\d+)s", msg)
+                sec = int(m.group(1)) if m else 30
+                await q.message.reply_text(f"🚫 Квоту вичерпано. Поставив у чергу на {sec} сек…")
+                async def speak_after_delay() -> None:
+                    await asyncio.sleep(sec)
+                    try:
+                        tts2 = GeminiTTSClient(model=MODEL_ID)
+                        chunks2 = split_text_into_chunks(last, max_chars=7000)
+                        wavs2: list[Path] = []
+                        for idx2, chunk2 in enumerate(chunks2, start=1):
+                            await TTS_LIMITER.acquire()
+                            pcm2 = await asyncio.to_thread(tts2.generate_pcm, chunk2, "Kore")
+                            p2 = TEMP_DIR / f"chunk_after_{idx2}.wav"
+                            await asyncio.to_thread(write_wave_from_pcm, p2, pcm2)
+                            wavs2.append(p2)
+                        out2 = TEMP_DIR / f"tts_after_{q.id}.mp3"
+                        await asyncio.to_thread(merge_wavs_to_mp3_ffmpeg, wavs2, out2, infer_title(last), "ApXiVibeTTS")
+                        with out2.open("rb") as f2:
+                            await q.message.reply_audio(audio=f2, caption="🎧 Озвучення відповіді")
+                    except Exception as err2:
+                        log.exception("Помилка ретраю speak: %s", err2)
+                        await q.message.reply_text("⚠️ Не вдалось після паузи. Спробуй пізніше")
+                    finally:
+                        try:
+                            for p2 in TEMP_DIR.glob("chunk_after_*.wav"):
+                                p2.unlink(missing_ok=True)
+                            for p2 in TEMP_DIR.glob("tts_after_*.mp3"):
+                                p2.unlink(missing_ok=True)
+                        except Exception as rm2:
+                            log.debug("Не вдалось очистити після ретраю: %s", rm2)
+                asyncio.create_task(speak_after_delay())
+            else:
+                await q.message.reply_text("⚠️ Помилка під час озвучення")
         except Exception as cleanup_err:
             log.debug("Не вдалось надіслати повідомлення про помилку: %s", cleanup_err)
     finally:
@@ -372,6 +458,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("voice", voice))
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("reset", reset_command))
+    app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("mode", mode_menu))
     # Обробка натиснення кнопок з головної клавіатури
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^🎙️ Обрати голос$"), voice))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^ℹ️ Допомога$"), help_command))

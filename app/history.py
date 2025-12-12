@@ -38,3 +38,7 @@ def get_history_lines(user_data: dict[str, object], keep_last: int = 10, summary
     for m in tail:
         lines.append(f"{m.get('role', 'user')}: {m.get('text', '')}")
     return lines
+
+
+def clear(user_data: dict[str, object]) -> None:
+    user_data[KEY] = []
