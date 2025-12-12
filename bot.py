@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import cast
 
 try:
     from dotenv import load_dotenv
@@ -18,6 +19,7 @@ from telegram import (
     ReplyKeyboardRemove,
     Update,
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -37,6 +39,7 @@ from app.text_client import GeminiTextClient
 from app.title import infer_title
 from app.tts_client import GeminiTTSClient
 from app.ui import get_main_keyboard_labels
+from app.web_search import ddg_instant_answer
 
 # Налаштовуємо логування в консоль
 logging.basicConfig(
@@ -149,7 +152,8 @@ async def voice_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("VOICE:"):
         voice_name = data.split(":", 1)[1]
         if voice_name in ALLOWED_VOICES:
-            context.user_data["voice"] = voice_name
+            ud = cast(dict[str, object], context.user_data)
+            ud["voice"] = voice_name
             await query.edit_message_text(f"✅ Голос встановлено: {voice_name}")
         else:
             await query.edit_message_text("❌ Невідомий голос")
@@ -162,7 +166,8 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data = query.data or ""
     if data.startswith("STYLE:"):
         style_key = data.split(":", 1)[1]
-        context.user_data["style"] = style_key
+        ud = cast(dict[str, object], context.user_data)
+        ud["style"] = style_key
         await query.edit_message_text(f"✅ Стиль встановлено: {style_key}")
 
 
@@ -184,11 +189,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     mode = str(context.user_data.get("mode", "tts"))
     if mode == "chat":
         try:
+            progress_msg = await update.message.reply_text("⏳ Генерую відповідь…")
+            try:
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            except Exception as e:
+                log.debug("send_chat_action failed: %s", e)
             await CHAT_LIMITER.acquire()
             tc = GeminiTextClient(model=TEXT_MODEL_ID)
-            add_user(context.user_data, text)
-            history = get_history_lines(context.user_data)
-            reply = await asyncio.to_thread(tc.generate_text, text, history)
+            ud = cast(dict[str, object], context.user_data)
+            add_user(ud, text)
+            history = get_history_lines(ud)
+            use_web = bool(context.user_data.get("web_mode", True))
+            sources = ddg_instant_answer(text) if use_web else []
+            if use_web and sources:
+                src_lines = []
+                for i, s in enumerate(sources[:3], start=1):
+                    url = s.get("url", "")
+                    title = s.get("title", "")
+                    src_lines.append(f"[{i}] {title} — {url}")
+                prompt_with_sources = text + "\n\nДжерела:\n" + "\n".join(src_lines)
+                reply = await asyncio.to_thread(tc.generate_text, prompt_with_sources, history)
+            else:
+                reply = await asyncio.to_thread(tc.generate_text, text, history)
             add_assistant(context.user_data, reply)
             if len(reply) <= TELEGRAM_MSG_LIMIT:
                 sent = await update.message.reply_text(reply)
@@ -198,9 +220,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 for part in parts:
                     last_sent = await update.message.reply_text(part)
                 sent = last_sent if last_sent is not None else await update.message.reply_text(reply[:TELEGRAM_MSG_LIMIT])
-            context.user_data["last_bot_reply"] = reply
+            ud["last_bot_reply"] = reply
             speak_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🗣️ Озвучити відповідь", callback_data="SPEAK")]])
             await sent.edit_reply_markup(speak_btn)
+            try:
+                await progress_msg.edit_text("✅ Відповідь готова")
+            except Exception as e:
+                log.debug("edit progress failed: %s", e)
+            if use_web and sources:
+                src_lines = []
+                for i, s in enumerate(sources[:3], start=1):
+                    url = s.get("url", "")
+                    title = s.get("title", "")
+                    src_lines.append(f"[{i}] {title}\n{url}")
+                await update.message.reply_text("🔗 Джерела:\n" + "\n\n".join(src_lines))
         except Exception as e:
             log.exception("Помилка чату: %s", e)
             await update.message.reply_text("⚠️ Чат тимчасово недоступний, спробуй пізніше")
@@ -316,12 +349,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.clear()
+    ud = cast(dict[str, object], context.user_data)
+    ud.clear()
     await update.message.reply_text("♻️ Скинуто налаштування", reply_markup=ReplyKeyboardRemove())
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    clear_history(context.user_data)
+    clear_history(cast(dict[str, object], context.user_data))
     await update.message.reply_text("🧹 Історію чату очищено")
 
 
@@ -333,8 +367,9 @@ async def mode_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    mode = str(context.user_data.get("mode", "tts"))
-    voice_name = context.user_data.get("voice", "Kore")
+    ud = cast(dict[str, object], context.user_data)
+    mode = str(ud.get("mode", "tts"))
+    voice_name = ud.get("voice", "Kore")
     hook = get_webhook_config()
     running = "webhook" if hook is not None else "polling"
     msg = (
@@ -356,30 +391,48 @@ async def mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if data.startswith("MODE:"):
         m = data.split(":", 1)[1]
         if m in {"chat", "tts"}:
-            context.user_data["mode"] = m
+            ud = cast(dict[str, object], context.user_data)
+            ud["mode"] = m
             await q.edit_message_text(f"✅ Режим: {m}")
 
 
 async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
+    if q is None or q.message is None:
+        return
     await q.answer()
-    last = str(context.user_data.get("last_bot_reply", "")).strip()
+    ud = cast(dict[str, object], context.user_data)
+    last = str(ud.get("last_bot_reply", "")).strip()
     if not last:
         await q.message.reply_text("❌ Немає відповіді для озвучення")
         return
+    progress_msg = await q.message.reply_text("⏳ Озвучую відповідь…")
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     tts = GeminiTTSClient(model=MODEL_ID)
     chunks = split_text_into_chunks(last, max_chars=7000)
+    total = len(chunks) or 1
     wav_paths: list[Path] = []
     try:
         for idx, chunk in enumerate(chunks, start=1):
+            try:
+                await progress_msg.edit_text(f"🔊 Озвучую чанк {idx}/{total}…")
+            except Exception as e:
+                log.debug("edit progress failed: %s", e)
             await TTS_LIMITER.acquire()
             pcm = await asyncio.to_thread(tts.generate_pcm, chunk, "Kore")
             p = TEMP_DIR / f"chunk_{idx}.wav"
             await asyncio.to_thread(write_wave_from_pcm, p, pcm)
             wav_paths.append(p)
+        try:
+            await progress_msg.edit_text("🧩 Склеюю аудіо…")
+        except Exception as e:
+            log.debug("edit progress failed: %s", e)
         out_mp3 = TEMP_DIR / f"tts_cb_{q.id}.mp3"
         await asyncio.to_thread(merge_wavs_to_mp3_ffmpeg, wav_paths, out_mp3, infer_title(last), "ApXiVibeTTS")
+        try:
+            await progress_msg.edit_text("✅ Готово! Відправляю MP3…")
+        except Exception as e:
+            log.debug("edit progress failed: %s", e)
         with out_mp3.open("rb") as f:
             await q.message.reply_audio(audio=f, caption="🎧 Озвучення відповіді")
     except Exception as e:
@@ -389,7 +442,10 @@ async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
                 m = re.search(r"retryDelay.*?(\d+)s", msg)
                 sec = int(m.group(1)) if m else 30
-                await q.message.reply_text(f"🚫 Квоту вичерпано. Поставив у чергу на {sec} сек…")
+                try:
+                    await progress_msg.edit_text(f"🚫 Квоту вичерпано. Поставив у чергу на {sec} сек…")
+                except Exception as e:
+                    log.debug("edit progress failed: %s", e)
                 async def speak_after_delay() -> None:
                     await asyncio.sleep(sec)
                     try:
@@ -434,6 +490,19 @@ async def speak_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as rm_err:
             log.debug("Не вдалось видалити тимчасовий MP3: %s", rm_err)
 
+async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args if hasattr(context, "args") else []
+    if args:
+        v = args[0].lower()
+        if v in {"on", "off"}:
+            ud = cast(dict[str, object], context.user_data)
+            ud["web_mode"] = v == "on"
+            await update.message.reply_text(f"🌐 Веб-режим: {'увімкнено' if v == 'on' else 'вимкнено'}")
+            return
+    ud = cast(dict[str, object], context.user_data)
+    current = bool(ud.get("web_mode", False))
+    await update.message.reply_text(f"🌐 Веб-режим: {'увімкнено' if current else 'вимкнено'}")
+
 
 async def post_init(application: Application) -> None:
     # Меню команд Telegram (щоб не вводити вручну)
@@ -444,6 +513,10 @@ async def post_init(application: Application) -> None:
             BotCommand("help", "Допомога"),
             BotCommand("menu", "Показати клавіатуру"),
             BotCommand("reset", "Скинути налаштування та прибрати клавіатуру"),
+            BotCommand("clear", "Очистити історію чату"),
+            BotCommand("status", "Показати статус"),
+            BotCommand("mode", "Перемкнути режим"),
+            BotCommand("web", "Увімкнути/вимкнути веб-режим"),
         ]
     )
 
@@ -461,6 +534,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("mode", mode_menu))
+    app.add_handler(CommandHandler("web", web_command))
     # Обробка натиснення кнопок з головної клавіатури
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^🎙️ Обрати голос$"), voice))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^ℹ️ Допомога$"), help_command))

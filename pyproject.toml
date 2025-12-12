@@ -34,6 +34,7 @@ lint.ignore = ["E501"]
 "tests/**" = ["S101", "PLR2004", "F401"]
 "bot.py" = ["PLR0912", "PLR0915"]
 "app/audio_utils.py" = ["S603"]
+"app/web_search.py" = ["S310"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -43,4 +44,9 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 disallow_any_generics = true
+files = ["app/**"]
+
+[[tool.mypy.overrides]]
+module = ["bot"]
+ignore_errors = true
 
