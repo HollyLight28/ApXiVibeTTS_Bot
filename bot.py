@@ -39,7 +39,7 @@ from app.text_client import GeminiTextClient
 from app.title import infer_title
 from app.tts_client import GeminiTTSClient
 from app.ui import get_main_keyboard_labels
-from app.web_search import ddg_instant_answer
+from app.web_search import brave_search, ddg_instant_answer
 
 # Налаштовуємо логування в консоль
 logging.basicConfig(
@@ -200,7 +200,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             add_user(ud, text)
             history = get_history_lines(ud)
             use_web = bool(context.user_data.get("web_mode", True))
-            sources = ddg_instant_answer(text) if use_web else []
+            ud = cast(dict[str, object], context.user_data)
+            provider = str(ud.get("web_source", "ddg"))
+            sources = []
+            if use_web:
+                if provider == "brave":
+                    sources = brave_search(text)
+                    if not sources:
+                        sources = ddg_instant_answer(text)
+                else:
+                    sources = ddg_instant_answer(text)
             if use_web and sources:
                 src_lines = []
                 for i, s in enumerate(sources[:3], start=1):
@@ -504,6 +513,22 @@ async def web_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"🌐 Веб-режим: {'увімкнено' if current else 'вимкнено'}")
 
 
+async def websource_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ud = cast(dict[str, object], context.user_data)
+    args = context.args if hasattr(context, "args") else []
+    if args:
+        v = args[0].lower()
+        if v in {"ddg", "brave"}:
+            if v == "brave" and not (os.environ.get("BRAVE_API_KEY") or os.environ.get("BRAVE_SEARCH_API_KEY")):
+                await update.message.reply_text("🌐 Brave недоступний: додай BRAVE_API_KEY у змінні середовища")
+                return
+            ud["web_source"] = v
+            await update.message.reply_text(f"🌐 Джерело веб‑пошуку: {v}")
+            return
+    cur = str(ud.get("web_source", "ddg"))
+    await update.message.reply_text(f"🌐 Джерело веб‑пошуку: {cur}")
+
+
 async def post_init(application: Application) -> None:
     # Меню команд Telegram (щоб не вводити вручну)
     await application.bot.set_my_commands(
@@ -535,6 +560,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("mode", mode_menu))
     app.add_handler(CommandHandler("web", web_command))
+    app.add_handler(CommandHandler("websource", websource_command))
     # Обробка натиснення кнопок з головної клавіатури
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^🎙️ Обрати голос$"), voice))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^ℹ️ Допомога$"), help_command))

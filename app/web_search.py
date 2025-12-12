@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 import urllib.request
 
@@ -30,3 +31,27 @@ def ddg_instant_answer(query: str, max_results: int = 5) -> list[dict[str, str]]
         if len(results) >= max_results:
             break
     return results
+
+
+def brave_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    key = os.environ.get("BRAVE_API_KEY") or os.environ.get("BRAVE_SEARCH_API_KEY")
+    if not key:
+        return []
+    q = urllib.parse.quote(query)
+    url = f"https://api.search.brave.com/res/v1/web/search?q={q}"
+    req = urllib.request.Request(url, headers={"X-Subscription-Token": key})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+    items = []
+    web = data.get("web") or {}
+    results = web.get("results") or []
+    for r in results[:max_results]:
+        title = r.get("title") or ""
+        url = r.get("url") or ""
+        text = r.get("description") or ""
+        if url:
+            items.append({"title": title, "url": url, "text": text})
+    return items
