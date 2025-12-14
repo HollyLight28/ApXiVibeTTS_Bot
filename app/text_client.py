@@ -13,9 +13,9 @@ class GeminiTextClient:
         if not key:
             raise RuntimeError("Відсутній GEMINI_API_KEY/GOOGLE_API_KEY. Додай ключ у змінні середовища.")
         self.client = genai.Client(api_key=key)
-        # Default to gemini-1.5-flash if not specified.
-        # It has higher limits (1500 req/day) compared to Pro models.
-        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+        # Default to gemini-2.5-flash-lite if not specified.
+        # It has higher limits (approx 1500 req/day) compared to standard Flash (250-500).
+        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
     def generate_text(self, prompt: str, history: Sequence[str] | None = None) -> str:
         contents = ("\n".join(history) + "\n" + prompt) if history else prompt
