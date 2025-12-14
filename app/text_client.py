@@ -8,12 +8,14 @@ from google.genai import types
 
 
 class GeminiTextClient:
-    def __init__(self, api_key: str | None = None, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str | None = None, model: str | None = None):
         key = api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
         if not key:
             raise RuntimeError("Відсутній GEMINI_API_KEY/GOOGLE_API_KEY. Додай ключ у змінні середовища.")
         self.client = genai.Client(api_key=key)
-        self.model = model
+        # Default to gemini-1.5-flash if not specified.
+        # It has higher limits (1500 req/day) compared to Pro models.
+        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
     def generate_text(self, prompt: str, history: Sequence[str] | None = None) -> str:
         contents = ("\n".join(history) + "\n" + prompt) if history else prompt
