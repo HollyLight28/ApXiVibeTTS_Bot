@@ -13,6 +13,8 @@ class GroqTextClient:
         key = api_key or os.environ.get("GROQ_API_KEY")
         if not key:
             raise RuntimeError("Відсутній GROQ_API_KEY. Додай ключ у змінні середовища.")
+        # Strip whitespace/newlines that may be accidentally included when copy-pasting
+        key = key.strip()
         self.client = Groq(api_key=key)
         # Default to llama-3.3-70b-versatile - найпотужніша модель Groq
         self.model = model or os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
