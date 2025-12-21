@@ -113,7 +113,7 @@ def test_handle_text_chat_progress(monkeypatch: pytest.MonkeyPatch):
     async def fake_acquire():
         return None
 
-    monkeypatch.setattr(botmod, "GeminiTextClient", FakeTextClient)
+    monkeypatch.setattr(botmod, "GroqTextClient", FakeTextClient)
     monkeypatch.setattr(botmod, "ddg_instant_answer", lambda q: [])
     monkeypatch.setattr(botmod.CHAT_LIMITER, "acquire", fake_acquire)
 

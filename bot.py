@@ -35,7 +35,7 @@ from app.chunking import split_text_into_chunks
 from app.history import add_assistant, add_user, get_history_lines
 from app.history import clear as clear_history
 from app.rate_limiter import RateLimiter, env_int
-from app.text_client import GeminiTextClient
+from app.groq_text_client import GroqTextClient
 from app.title import infer_title
 from app.tts_client import GeminiTTSClient
 from app.ui import get_main_keyboard_labels
@@ -51,7 +51,7 @@ log = logging.getLogger("ApXiVibeTTS")
 
 # Константи
 ALLOWED_VOICES = ("Kore", "Aoede", "Puck", "Charon")
-TEXT_MODEL_ID = os.environ.get("TEXT_MODEL_ID") or "gemini-2.5-flash"
+TEXT_MODEL_ID = os.environ.get("TEXT_MODEL_ID") or "llama-3.3-70b-versatile"
 TTS_MODEL_ID = os.environ.get("TTS_MODEL_ID") or "gemini-2.5-flash-preview-tts"
 MODEL_ID = TTS_MODEL_ID
 TEMP_DIR = Path("temp_audio")
@@ -196,7 +196,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             except Exception as e:
                 log.debug("send_chat_action failed: %s", e)
             await CHAT_LIMITER.acquire()
-            tc = GeminiTextClient(model=TEXT_MODEL_ID)
+            tc = GroqTextClient(model=TEXT_MODEL_ID)
             ud = cast(dict[str, object], context.user_data)
             add_user(ud, text)
             history = get_history_lines(ud)
